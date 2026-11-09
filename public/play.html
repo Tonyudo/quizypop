@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+  <meta name="theme-color" content="#1b1035" />
+  <title>QuizzlyPop — Play</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&display=swap" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div class="phone">
+  <div class="phone-head"><span class="logo" style="font-size:18px"><span class="dot" style="width:20px;height:20px"></span>QuizzlyPop</span><span id="head-right"></span></div>
+  <div id="screen" style="flex:1;display:flex;flex-direction:column"></div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script type="module">
+const $ = (s) => document.querySelector(s);
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  for (const k of kids) if (k != null && k !== false) n.append(k);
+  return n;
+};
+const LETTERS = ['A', 'B', 'C', 'D'];
+const params = new URLSearchParams(location.search);
+let code = (params.get('code') || '').toUpperCase();
+let view = null;
+let tick = null;
+let pendingChoice = null;
+let lastKey = null;
+let sentFinal = false;
+const idKey = () => `qp_player_${code}`;
+
+const socket = io({ autoConnect: false });
+
+// Rejoin automatically when the phone wakes up / Wi-Fi blips.
+socket.on('connect', () => {
+  const saved = JSON.parse(localStorage.getItem(idKey()) || 'null');
+  if (saved?.playerId) join(saved.name, saved.playerId);
+});
+socket.on('disconnect', () => ($('#head-right').textContent = 'Reconnecting…'));
+socket.on('state', (v) => { view = v; render(); });
+socket.on('kicked', () => { localStorage.removeItem(idKey()); socket.disconnect(); screen(center('👋', 'You were removed from the game', 'Ask the host if this was a mistake.')); });
+
+function join(name, playerId) {
+  socket.emit('player:join', { code, name, playerId }, (res) => {
+    if (res?.error) {
+      if (playerId) { localStorage.removeItem(idKey()); return showJoin(); }
+      $('#join-err') && ($('#join-err').textContent = res.error);
+      return;
+    }
+    localStorage.setItem(idKey(), JSON.stringify({ playerId: res.playerId, name: res.name }));
+  });
+}
+
+function screen(...nodes) { clearInterval(tick); $('#screen').replaceChildren(...nodes); }
+function center(emoji, title, sub, ...extra) {
+  return el('div', { className: 'center-screen' }, emoji ? el('div', { className: 'emoji', textContent: emoji }) : null, el('h1', { textContent: title }), sub ? el('p', { className: 'muted light', style: 'font-size:18px;margin:0', textContent: sub }) : null, ...extra);
+}
+
+function showJoin() {
+  const codeIn = el('input', { className: 'input', placeholder: 'GAME CODE', maxLength: 5, value: code, autocapitalize: 'characters', autocomplete: 'off' });
+  const nameIn = el('input', { className: 'input', placeholder: 'Your name', maxLength: 20, autocomplete: 'nickname' });
+  const btn = el('button', { className: 'btn big', textContent: "I'm in! →" });
+  const err = el('div', { className: 'err', id: 'join-err' });
+  const go = () => {
+    code = codeIn.value.trim().toUpperCase();
+    if (!code) return (err.textContent = 'Enter the code on the TV');
+    if (!nameIn.value.trim()) return (err.textContent = 'Pick a name first!');
+    history.replaceState(null, '', `/play?code=${code}`);
+    err.textContent = '';
+    if (!socket.connected) { socket.once('connect', () => join(nameIn.value)); socket.connect(); } else join(nameIn.value);
+  };
+  btn.onclick = go;
+  nameIn.onkeydown = (e) => e.key === 'Enter' && go();
+  const card = el('div', { className: 'join-card' }, code ? null : codeIn, nameIn, btn, err);
+  screen(el('div', { className: 'center-screen' }, el('div', { className: 'emoji', textContent: '🎉' }), el('h1', { textContent: 'Join the game' }), card));
+  (code ? nameIn : codeIn).focus();
+}
+
+function render() {
+  $('#head-right').replaceChildren(el('span', { className: 'score', textContent: `${view.me.name} · ${view.me.score.toLocaleString()}` }));
+  const key = `${view.state}:${view.question?.index}`;
+  if (key !== lastKey) pendingChoice = null;
+  lastKey = key;
+
+  if (view.state === 'lobby') return screen(center('🙌', "You're in!", `Look for your name on the big screen. Waiting for the host to start…`));
+  if (view.state === 'question') return renderQuestion();
+  if (view.state === 'reveal') return renderReveal();
+  if (view.state === 'leaderboard') {
+    const r = view.me.rank;
+    return screen(center(r === 1 ? '👑' : r <= 3 ? '🔥' : '🎯', `You're #${r}`, `of ${view.playerCount} · ${view.me.score.toLocaleString()} pts`, view.me.streak > 1 ? el('p', { style: 'font-weight:700;color:var(--pop-2);margin:0', textContent: `🔥 ${view.me.streak} answer streak` }) : null));
+  }
+  if (view.state === 'final') return renderFinal();
+}
+
+function renderQuestion() {
+  const q = view.question;
+  const answered = view.answered ?? pendingChoice;
+  if (answered != null) {
+    return screen(center('⏳', 'Locked in!', `You picked ${LETTERS[answered]}: "${q.options[answered]}"`, el('p', { className: 'muted light', textContent: 'Waiting for everyone else…' })));
+  }
+  const bar = el('div');
+  const timerWrap = el('div', { className: 'mini-timer' }, bar);
+  const upd = () => { const left = Math.max(0, (q.endsAt - Date.now()) / (q.seconds * 1000)); bar.style.transform = `scaleX(${left})`; };
+  const opts = el('div', { className: 'phone-opts' });
+  q.options.forEach((o, i) => {
+    const b = el('button', { className: `opt o${i}` }, el('span', { className: 'letter', textContent: LETTERS[i] }), el('span', { textContent: o }));
+    b.onclick = () => {
+      pendingChoice = i;
+      navigator.vibrate?.(30);
+      socket.emit('player:answer', { choice: i });
+      renderQuestion();
+    };
+    opts.append(b);
+  });
+  screen(el('div', { className: 'muted light', style: 'font-weight:700;margin-bottom:6px', textContent: `Question ${q.index + 1} of ${q.total}` }),
+    el('h2', { className: 'phone-q', textContent: q.text }),
+    q.photoUrl ? el('img', { className: 'phone-photo', src: q.photoUrl, alt: '' }) : null,
+    timerWrap, opts);
+  upd();
+  tick = setInterval(upd, 200);
+}
+
+function renderReveal() {
+  const r = view.result || { correct: false, missed: true };
+  const q = view.question;
+  const answer = el('p', { className: 'muted light', style: 'font-size:17px;margin:0' }, 'Answer: ', el('b', { style: 'color:#fff', textContent: q.options[q.correct] }));
+  if (r.correct) {
+    navigator.vibrate?.([40, 60, 40]);
+    screen(center('✅', 'Correct!', null, el('div', { className: 'display result-good', style: 'font-size:44px', textContent: `+${r.points}` }), r.streakBonus ? el('p', { style: 'margin:0;font-weight:700;color:var(--pop-2)', textContent: `includes 🔥 streak bonus +${r.streakBonus}` }) : null, answer));
+  } else {
+    screen(center(r.missed ? '⌛' : '❌', r.missed ? "Time's up!" : 'Nope!', null, answer, el('p', { className: 'muted light', style: 'margin:0', textContent: `You're #${view.me.rank} of ${view.playerCount}` })));
+  }
+}
+
+function renderFinal() {
+  const r = view.me.rank;
+  const title = r === 1 ? `You know ${view.honoree} best!` : r <= 3 ? `#${r}! So close!` : `You finished #${r}`;
+  const cta = el('div', { className: 'cta-card' },
+    el('h3', { style: 'font-size:21px', textContent: 'Got a party coming up? 🎈' }),
+    el('p', { className: 'muted', style: 'margin:6px 0 0', textContent: 'Make a game like this about your friend in 3 minutes. Free for up to 8 players.' }),
+    el('a', { className: 'btn', href: `/go?src=player_end&code=${view.code}`, textContent: 'Make my own game →' }));
+  if (!sentFinal) fetch('/api/track', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ event: 'endscreen_view', code: view.code }) }).catch(() => {});
+  sentFinal = true;
+  screen(center(r === 1 ? '🏆' : r <= 3 ? '🥳' : '🎉', title, `${view.me.score.toLocaleString()} points`, cta));
+}
+
+// Boot
+const saved = code && JSON.parse(localStorage.getItem(idKey()) || 'null');
+if (saved?.playerId) { screen(center('🔌', 'Reconnecting…', null)); socket.connect(); }
+else showJoin();
+</script>
+</body>
+</html>

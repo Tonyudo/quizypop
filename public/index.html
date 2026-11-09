@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>QuizzlyPop — party trivia about the guest of honor</title>
+  <meta name="description" content="Turn inside jokes & photos into a hilarious live multiplayer trivia show in 3 minutes." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&display=swap" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="topbar"><a class="logo" href="/"><span class="dot"></span>QuizzlyPop</a></div>
+
+  <!-- LANDING -->
+  <section id="s-landing" class="wrap">
+    <div class="hero">
+      <h1>Turn inside jokes into a <em>live trivia show</em> in 3 minutes.</h1>
+      <p>Answer a few questions about the birthday girl, the groom, or the retiring coworker. We write the quiz. Guests scan a QR code and battle it out on their phones.</p>
+      <button class="btn big" id="go-start">Make my game →</button>
+      <p class="muted light" style="font-size:15px;margin-top:14px">Free for up to 8 players. No app, no sign-up.</p>
+    </div>
+    <div class="how">
+      <div><b>1. Spill the tea</b>10 quick prompts + a few photos.</div>
+      <div><b>2. We write the jokes</b>AI writes the questions and the funny wrong answers. You approve them.</div>
+      <div><b>3. Play on the TV</b>Guests scan, tap, and roast. The winner gets bragging rights.</div>
+    </div>
+  </section>
+
+  <!-- STEP 1: who -->
+  <section id="s-who" class="wrap hidden">
+    <div class="steps"><span class="on"></span><span></span><span></span><span></span></div>
+    <div class="card">
+      <h2>Who's the star of the show?</h2>
+      <label class="field" for="honoree">Their name (or nickname)</label>
+      <input class="input" id="honoree" maxlength="40" placeholder="e.g. Dani" autocomplete="off" />
+      <label class="field">What's the occasion?</label>
+      <div class="chips" id="occasions"></div>
+    </div>
+  </section>
+
+  <!-- STEP 2: prompts -->
+  <section id="s-prompts" class="wrap hidden">
+    <div class="steps"><span class="on"></span><span class="on"></span><span></span><span></span></div>
+    <div class="card">
+      <h2>Spill the tea on <span class="honoree-name">them</span></h2>
+      <p class="muted">Answer as many as you can. Skip any you don't know. Specific + weird = funnier questions.</p>
+      <div id="prompt-list"></div>
+    </div>
+  </section>
+
+  <!-- STEP 3: photos -->
+  <section id="s-photos" class="wrap hidden">
+    <div class="steps"><span class="on"></span><span class="on"></span><span class="on"></span><span></span></div>
+    <div class="card">
+      <h2>Photo rounds 📸</h2>
+      <p class="muted">Baby photos, a questionable haircut, that trip nobody talks about. Each photo becomes a guessing round. Optional, but they're the best part.</p>
+      <label class="dropzone" for="photo-input">
+        <strong>+ Add photos</strong><br /><span style="font-size:14px">Up to 6. They stay private to this game and disappear after the party.</span>
+      </label>
+      <input type="file" id="photo-input" accept="image/*" multiple class="hidden" />
+      <div class="photo-grid" id="photo-grid"></div>
+    </div>
+  </section>
+
+  <!-- STEP 4: stories -->
+  <section id="s-stories" class="wrap hidden">
+    <div class="steps"><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span></div>
+    <div class="card">
+      <h2>Any legendary stories?</h2>
+      <p class="muted">Optional. Paste a few stories or inside jokes and the AI will turn the best bits into bonus questions.</p>
+      <textarea class="input" id="stories" maxlength="4000" placeholder="e.g. On our road trip in 2019, Dani insisted we stop at every single Buc-ee's. We were 6 hours late to the wedding. She bought a beaver hat at each one."></textarea>
+      <p class="muted" style="font-size:14px;margin-top:12px">Heads up: you'll review every question before anyone sees it.</p>
+    </div>
+  </section>
+
+  <!-- LOADING -->
+  <section id="s-loading" class="wrap hidden">
+    <div class="loading">
+      <div class="spinner"></div>
+      <h2 id="loading-msg">Writing your questions…</h2>
+      <p class="muted light">Usually takes 10–30 seconds.</p>
+    </div>
+  </section>
+
+  <!-- REVIEW -->
+  <section id="s-review" class="wrap hidden">
+    <h1 style="font-size:32px;margin-bottom:6px">Your game is ready 🎉</h1>
+    <p class="muted light" style="margin-top:0">Tweak anything that's too spicy, too easy, or just wrong. The <span style="color:var(--ok);font-weight:700">green</span> one is the correct answer.</p>
+    <div id="review-banner"></div>
+    <div id="review-list"></div>
+    <button class="btn secondary" id="add-q" style="margin-top:16px;width:100%">+ Add a question</button>
+  </section>
+
+  <div class="footer-bar hidden" id="footer">
+    <div class="inner">
+      <button class="btn secondary" id="back">← Back</button>
+      <span class="muted light" id="footer-note" style="font-size:14px;text-align:center"></span>
+      <button class="btn" id="next">Next →</button>
+    </div>
+  </div>
+
+<script type="module">
+import { PROMPTS, PHOTO_KINDS } from '/shared.js';
+
+const $ = (s) => document.querySelector(s);
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  for (const k of kids) n.append(k);
+  return n;
+};
+const track = (event, code) => fetch('/api/track', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ event, code }) }).catch(() => {});
+
+const OCCASIONS = ['Birthday', 'Wedding', 'Bachelor party', 'Bachelorette', 'Retirement', 'Holiday party', 'Baby shower', 'Other'];
+const DRAFT_KEY = 'qp_draft_v1';
+const STEPS = ['s-who', 's-prompts', 's-photos', 's-stories'];
+
+const draft = Object.assign({ honoree: '', occasion: '', answers: {}, stories: '' }, JSON.parse(localStorage.getItem(DRAFT_KEY) || '{}'));
+let photos = []; // {kind, answer, dataUrl}
+let step = -1;
+let game = null; // {code, hostToken, questions, photoIds}
+
+const save = () => localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+
+// ---------- step 1 ----------
+$('#honoree').value = draft.honoree;
+$('#honoree').addEventListener('input', (e) => { draft.honoree = e.target.value; save(); refreshNames(); syncFooter(); });
+for (const o of OCCASIONS) {
+  const b = el('button', { className: 'chip', textContent: o, type: 'button' });
+  b.setAttribute('aria-pressed', draft.occasion === o);
+  b.onclick = () => {
+    draft.occasion = o; save();
+    document.querySelectorAll('#occasions .chip').forEach((c) => c.setAttribute('aria-pressed', c === b));
+  };
+  $('#occasions').append(b);
+}
+function refreshNames() { document.querySelectorAll('.honoree-name').forEach((n) => (n.textContent = draft.honoree.trim() || 'them')); }
+refreshNames();
+
+// ---------- step 2 ----------
+for (const p of PROMPTS) {
+  const input = el('input', { className: 'input', placeholder: p.placeholder, maxLength: 300, value: draft.answers[p.id] || '' });
+  input.addEventListener('input', () => { draft.answers[p.id] = input.value; save(); syncFooter(); });
+  $('#prompt-list').append(el('div', { className: 'prompt-row' }, el('label', { textContent: p.label }), input));
+}
+const answeredCount = () => PROMPTS.filter((p) => draft.answers[p.id]?.trim()).length;
+
+// ---------- step 3: photos ----------
+function resize(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const max = 1024;
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale);
+      c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(img.src);
+      resolve(c.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
+}
+$('#photo-input').addEventListener('change', async (e) => {
+  for (const f of [...e.target.files].slice(0, 6 - photos.length)) {
+    try { photos.push({ kind: 'whose', answer: '', dataUrl: await resize(f) }); } catch { alert(`Couldn't read ${f.name}`); }
+  }
+  e.target.value = '';
+  renderPhotos();
+});
+function renderPhotos() {
+  const grid = $('#photo-grid');
+  grid.replaceChildren();
+  photos.forEach((p, i) => {
+    const kind = el('select', { className: 'input' });
+    for (const [k, v] of Object.entries(PHOTO_KINDS)) kind.append(el('option', { value: k, textContent: v.label, selected: p.kind === k }));
+    const ans = el('input', { className: 'input', placeholder: PHOTO_KINDS[p.kind].answerHint, value: p.answer, maxLength: 80 });
+    kind.onchange = () => { p.kind = kind.value; ans.placeholder = PHOTO_KINDS[p.kind].answerHint; };
+    ans.oninput = () => { p.answer = ans.value; syncFooter(); };
+    const rm = el('button', { className: 'btn ghost', textContent: 'Remove', type: 'button' });
+    rm.onclick = () => { photos.splice(i, 1); renderPhotos(); };
+    grid.append(el('div', { className: 'photo-card' }, el('img', { src: p.dataUrl, alt: '' }), el('div', { className: 'body' }, kind, ans, rm)));
+  });
+  $('.dropzone').classList.toggle('hidden', photos.length >= 6);
+  syncFooter();
+}
+
+// ---------- step 4 ----------
+$('#stories').value = draft.stories;
+$('#stories').addEventListener('input', (e) => { draft.stories = e.target.value; save(); });
+
+// ---------- navigation ----------
+const LOADING_MSGS = ['Reading the group chat…', 'Inventing plausible lies…', 'Calibrating roast levels…', 'Hiding the embarrassing stuff (some of it)…', 'Making wrong answers suspiciously convincing…', 'Polishing the buzzer…'];
+
+function show(id) {
+  document.querySelectorAll('body > section').forEach((s) => s.classList.toggle('hidden', s.id !== id));
+  window.scrollTo(0, 0);
+}
+function go(n) {
+  step = n;
+  if (n === -1) { show('s-landing'); $('#footer').classList.add('hidden'); return; }
+  show(STEPS[n]);
+  $('#footer').classList.remove('hidden');
+  if (n === 0) setTimeout(() => $('#honoree').focus(), 50);
+  syncFooter();
+}
+function syncFooter() {
+  const next = $('#next');
+  const note = $('#footer-note');
+  next.textContent = 'Next →';
+  next.disabled = false;
+  note.textContent = '';
+  if (step === 0) next.disabled = !draft.honoree.trim();
+  if (step === 1) { note.textContent = `${answeredCount()}/10 answered`; next.disabled = answeredCount() < 3; if (answeredCount() < 3) note.textContent += ' · need 3+'; }
+  if (step === 2) { const missing = photos.filter((p) => !p.answer.trim()).length; note.textContent = missing ? `${missing} photo(s) need an answer` : `${photos.length} photo round(s)`; next.disabled = missing > 0; }
+  if (step === 3) next.textContent = '✨ Generate my game';
+}
+$('#go-start').onclick = () => { track('setup_started'); go(0); };
+$('#back').onclick = () => go(step - 1);
+const wizardNext = () => (step < 3 ? go(step + 1) : generate());
+$('#next').onclick = wizardNext;
+
+async function generate() {
+  show('s-loading');
+  $('#footer').classList.add('hidden');
+  let i = 0;
+  const t = setInterval(() => ($('#loading-msg').textContent = LOADING_MSGS[i++ % LOADING_MSGS.length]), 2200);
+  try {
+    const res = await fetch('/api/games', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        honoree: draft.honoree,
+        occasion: draft.occasion,
+        answers: PROMPTS.map((p) => ({ id: p.id, answer: draft.answers[p.id] || '' })),
+        stories: draft.stories,
+        photos,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Something went wrong');
+    game = data;
+    localStorage.setItem(`qp_host_${data.code}`, data.hostToken);
+    history.replaceState(null, '', `/?review=${data.code}`);
+    openReview(data.ai);
+  } catch (err) {
+    alert(err.message);
+    go(3);
+  } finally {
+    clearInterval(t);
+  }
+}
+
+// ---------- review ----------
+function openReview(ai) {
+  show('s-review');
+  $('#footer').classList.remove('hidden');
+  $('#back').textContent = '← Edit answers';
+  $('#back').onclick = () => { if (confirm('Go back and regenerate? Your edits to these questions will be lost.')) { $('#back').textContent = '← Back'; $('#back').onclick = () => go(step - 1); $('#next').onclick = wizardNext; go(1); } };
+  $('#next').textContent = 'Launch on the big screen →';
+  $('#next').disabled = false;
+  $('#next').onclick = launch;
+  $('#review-banner').replaceChildren(ai === false ? el('div', { className: 'banner', textContent: 'AI writer is offline, so these came from templates. Edit the wrong answers to make them funnier!' }) : '');
+  renderReview();
+  track('review_opened', game.code);
+}
+
+function renderReview() {
+  const list = $('#review-list');
+  list.replaceChildren();
+  $('#footer-note').textContent = `${game.questions.length} questions`;
+  game.questions.forEach((q, qi) => {
+    const card = el('div', { className: 'card q-card' });
+    const regen = el('button', { className: 'btn ghost', type: 'button', textContent: '↻ New question', disabled: !!q.photoId, title: q.photoId ? 'Edit photo rounds directly' : '' });
+    const del = el('button', { className: 'btn ghost', type: 'button', textContent: '🗑' });
+    del.onclick = () => { if (game.questions.length > 1) { game.questions.splice(qi, 1); renderReview(); } };
+    regen.onclick = async () => {
+      regen.textContent = 'Writing…'; regen.disabled = true;
+      try {
+        const res = await fetch(`/api/games/${game.code}/regenerate`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-host-token': game.hostToken }, body: JSON.stringify({ questions: game.questions }) });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        game.questions[qi] = data.question;
+        renderReview();
+      } catch (e) { alert(e.message || 'Could not regenerate'); regen.textContent = '↻ New question'; regen.disabled = false; }
+    };
+    card.append(el('div', { className: 'q-head' },
+      el('span', {}, el('span', { className: 'q-num', textContent: `Q${qi + 1} ` }), q.photoId ? el('span', { className: 'tag', textContent: '📸 Photo round' }) : ''),
+      el('span', {}, regen, del)));
+    if (q.photoId) card.append(el('img', { className: 'q-photo', src: `/api/games/${game.code}/photo/${q.photoId}`, alt: '' }));
+    const text = el('textarea', { className: 'input', value: q.text, maxLength: 200, rows: 2 });
+    text.style.minHeight = '60px';
+    text.oninput = () => (q.text = text.value);
+    card.append(text);
+    q.options.forEach((opt, oi) => {
+      const radio = el('input', { type: 'radio', name: `c${q.id}`, checked: q.correct === oi, title: 'Mark as correct' });
+      const inp = el('input', { className: 'input', value: opt, maxLength: 80 });
+      const row = el('div', { className: 'opt-edit' + (q.correct === oi ? ' correct' : '') }, radio, inp);
+      radio.onchange = () => { q.correct = oi; renderReview(); };
+      inp.oninput = () => (q.options[oi] = inp.value);
+      card.append(row);
+    });
+    list.append(card);
+  });
+}
+
+$('#add-q').onclick = () => {
+  game.questions.push({ id: `new${Date.now()}`, text: `Question about ${draft.honoree || 'them'}?`, options: ['Correct answer', 'Wrong answer', 'Wrong answer', 'Wrong answer'], correct: 0, photoId: null });
+  renderReview();
+  window.scrollTo(0, document.body.scrollHeight);
+};
+
+async function launch() {
+  const cleaned = game.questions.map((q) => ({ ...q, options: q.options.map((o) => o.trim()).filter(Boolean) }));
+  const bad = cleaned.findIndex((q) => !q.text.trim() || q.options.length < 2 || !q.options[q.correct]);
+  if (bad >= 0) return alert(`Question ${bad + 1} needs text, at least 2 answers, and a correct answer marked.`);
+  $('#next').disabled = true;
+  const res = await fetch(`/api/games/${game.code}/questions`, { method: 'PUT', headers: { 'content-type': 'application/json', 'x-host-token': game.hostToken }, body: JSON.stringify({ questions: cleaned }) });
+  const data = await res.json();
+  if (!res.ok) { $('#next').disabled = false; return alert(data.error); }
+  location.href = `/host?code=${game.code}`;
+}
+
+// Resume a review after refresh (?review=CODE)
+const reviewCode = new URLSearchParams(location.search).get('review');
+const hostToken = reviewCode && localStorage.getItem(`qp_host_${reviewCode}`);
+if (reviewCode && hostToken) {
+  fetch(`/api/games/${reviewCode}/draft`, { headers: { 'x-host-token': hostToken } })
+    .then((r) => (r.ok ? r.json() : Promise.reject()))
+    .then((d) => { game = { code: d.code, hostToken, questions: d.questions }; openReview(); })
+    .catch(() => go(-1));
+} else {
+  go(-1);
+}
+</script>
+</body>
+</html>
