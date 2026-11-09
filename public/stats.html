@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QuizzlyPop — Founder stats</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div class="wrap">
+  <h1 style="margin:10px 0 16px">Founder stats</h1>
+  <div class="card" id="out">Loading…</div>
+</div>
+<script type="module">
+const key = new URLSearchParams(location.search).get('key') || prompt('Admin key');
+const out = document.getElementById('out');
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const res = await fetch('/api/stats?key=' + encodeURIComponent(key));
+if (!res.ok) { out.textContent = 'Wrong key.'; } else {
+  const d = await res.json();
+  const rows = (o) => Object.entries(o).map(([k, v]) => `<tr><td>${esc(k)}</td><td><b>${esc(v)}</b></td></tr>`).join('');
+  out.innerHTML = `
+    <h2>Funnel</h2><table class="stats">${rows(d.funnel)}</table>
+    <h2 style="margin-top:22px">Event counts</h2><table class="stats"><tr><td>live games in memory</td><td><b>${d.liveGames}</b></td></tr>${rows(d.counts)}</table>
+    <h2 style="margin-top:22px">Recent events</h2><table class="stats">${d.recent.map((e) => `<tr><td>${esc(e.t.slice(5, 19).replace('T', ' '))}</td><td>${esc(e.event)}</td><td class="muted">${esc(JSON.stringify({ ...e, t: undefined, event: undefined }))}</td></tr>`).join('')}</table>`;
+}
+</script>
+</body>
+</html>

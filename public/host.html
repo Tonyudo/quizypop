@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>QuizzlyPop — Host</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&display=swap" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div class="tv">
+  <div class="topbar" style="max-width:1400px;width:100%">
+    <span class="logo"><span class="dot"></span>QuizzlyPop</span>
+    <span id="top-right" class="muted light" style="font-weight:700"></span>
+  </div>
+  <main class="tv-main" id="main"></main>
+  <div class="host-bar" id="bar"></div>
+</div>
+<div id="modal-root"></div>
+<div class="confetti" id="confetti"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script type="module">
+const $ = (s) => document.querySelector(s);
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  for (const k of kids) if (k != null && k !== false) n.append(k);
+  return n;
+};
+const LETTERS = ['A', 'B', 'C', 'D'];
+
+const code = new URLSearchParams(location.search).get('code')?.toUpperCase();
+const hostToken = code && localStorage.getItem(`qp_host_${code}`);
+if (!code || !hostToken) {
+  $('#main').append(el('div', { className: 'center-screen' }, el('h1', { textContent: "We couldn't find your game on this device." }), el('a', { className: 'btn', href: '/', textContent: 'Make a new game' })));
+  throw new Error('no host token');
+}
+
+let joinInfo = null;
+let view = null;
+let tick = null;
+let lastState = null;
+let thanksOpen = false;
+
+fetch(`/api/games/${code}/join-info`).then((r) => r.json()).then((d) => { joinInfo = d; if (view) render(); });
+
+const socket = io();
+socket.on('connect', () => socket.emit('host:join', { code, hostToken }, (res) => {
+  if (res?.error) $('#main').replaceChildren(el('div', { className: 'center-screen' }, el('h1', { textContent: res.error }), el('a', { className: 'btn', href: '/', textContent: 'Make a new game' })));
+}));
+socket.on('disconnect', () => ($('#top-right').textContent = 'Reconnecting…'));
+socket.on('state', (v) => { view = v; render(); });
+
+const act = (action) => socket.emit('host:action', { action });
+
+function button(label, onclick, cls = 'btn big') {
+  const b = el('button', { className: cls, textContent: label });
+  b.onclick = onclick;
+  return b;
+}
+
+function render() {
+  clearInterval(tick);
+  const main = $('#main');
+  const bar = $('#bar');
+  main.replaceChildren();
+  bar.replaceChildren();
+  $('#top-right').textContent = view.state === 'lobby' ? `Game for ${view.honoree}` : `${view.playerCount} playing · code ${view.code}`;
+  const changed = lastState !== `${view.state}:${view.question?.index}`;
+  lastState = `${view.state}:${view.question?.index}`;
+
+  if (view.state === 'lobby') renderLobby(main, bar);
+  if (view.state === 'question') renderQuestion(main, bar);
+  if (view.state === 'reveal') renderReveal(main, bar);
+  if (view.state === 'leaderboard') renderBoard(main, bar);
+  if (view.state === 'final') { renderFinal(main, bar); if (changed) confetti(); }
+  renderPaywall();
+}
+
+function renderLobby(main, bar) {
+  const left = el('div', {},
+    el('div', { className: 'qr' }, joinInfo ? el('img', { src: joinInfo.qr, alt: 'QR code to join' }) : el('div', { style: 'aspect-ratio:1' })),
+    el('div', { className: 'join-url' }, 'or go to ', el('b', { textContent: joinInfo ? `${joinInfo.host}/play` : '…' }), ' and enter'),
+    el('div', { className: 'join-code', style: 'text-align:center;margin-top:6px', textContent: view.code }));
+  const names = el('div', { className: 'name-cloud' });
+  for (const p of view.players) {
+    const kick = el('button', { textContent: '✕', title: `Remove ${p.name}` });
+    kick.onclick = () => confirm(`Remove ${p.name}?`) && socket.emit('host:kick', { playerId: p.id });
+    names.append(el('span', { className: 'name-pill' + (p.connected ? '' : ' off') }, p.name, kick));
+  }
+  const right = el('div', {},
+    el('p', { className: 'muted light', style: 'font-size:clamp(16px,1.6vw,22px);margin:0 0 8px;font-weight:700', textContent: `${view.occasion || 'Party'} trivia · ${view.questionCount} questions` }),
+    el('h1', { textContent: `How well do you know ${view.honoree}?` }),
+    el('p', { className: 'muted light', style: 'font-size:clamp(16px,1.6vw,22px)', textContent: view.playerCount ? `${view.playerCount} player${view.playerCount === 1 ? '' : 's'} in` : 'Scan the QR code with your phone camera to join 👈' }),
+    names);
+  main.append(el('div', { className: 'lobby' }, left, right));
+  const start = button(view.playerCount ? 'Start the game →' : 'Waiting for players…', () => act('next'));
+  start.disabled = !view.playerCount;
+  bar.append(start);
+}
+
+function header(q) {
+  return el('div', { className: 'q-top' }, el('span', { textContent: `Question ${q.index + 1} of ${q.total}` }), el('span', { textContent: `Join: ${view.code}` }));
+}
+
+function options(q, reveal) {
+  const grid = el('div', { className: 'tv-opts' });
+  q.options.forEach((o, i) => {
+    const cls = `opt o${i}` + (reveal ? (i === q.correct ? ' right' : ' dim') : '');
+    grid.append(el('div', { className: cls }, el('span', { className: 'letter', textContent: LETTERS[i] }), el('span', { textContent: o }), reveal ? el('span', { className: 'count', textContent: view.distribution?.[i] ?? 0 }) : null));
+  });
+  return grid;
+}
+
+function renderQuestion(main, bar) {
+  const q = view.question;
+  const timer = el('div', { className: 'timer' }, el('span'));
+  const updateTimer = () => {
+    const left = Math.max(0, (q.endsAt - Date.now()) / 1000);
+    timer.style.setProperty('--p', left / q.seconds);
+    timer.firstChild.textContent = Math.ceil(left);
+  };
+  updateTimer();
+  tick = setInterval(updateTimer, 200);
+  main.append(header(q), el('div', { className: 'q-text', textContent: q.text }),
+    el('div', { className: 'q-stage' }, timer, q.photoUrl ? el('img', { src: q.photoUrl, alt: '' }) : null,
+      el('div', { className: 'answered-count' }, String(view.answeredCount), el('small', { textContent: 'answers' }))),
+    options(q, false));
+  bar.append(button('Skip timer', () => act('next'), 'btn secondary'));
+}
+
+function renderReveal(main, bar) {
+  const q = view.question;
+  main.append(header(q), el('div', { className: 'q-text', textContent: q.text }),
+    el('div', { className: 'q-stage' }, q.photoUrl ? el('img', { src: q.photoUrl, alt: '' }) : null),
+    options(q, true));
+  bar.append(button(view.isLast ? 'Final results 🏆' : 'Leaderboard →', () => act('next')));
+}
+
+function renderBoard(main, bar) {
+  main.append(el('h1', { style: 'text-align:center;font-size:clamp(30px,4vw,56px);margin:10px 0 26px', textContent: 'Leaderboard' }));
+  const board = el('div', { className: 'board' });
+  view.players.slice(0, 5).forEach((p, i) => {
+    const row = el('div', { className: 'board-row' }, el('span', { className: 'rk', textContent: `#${p.rank}` }), el('span', { textContent: p.name }), el('span', { className: 'sc', textContent: p.score.toLocaleString() }));
+    row.style.animationDelay = `${i * 0.08}s`;
+    board.append(row);
+  });
+  main.append(board);
+  bar.append(button('Next question →', () => act('next')));
+}
+
+function renderFinal(main, bar) {
+  const [first, second, third] = view.players;
+  const step = (p, cls, n) => el('div', { className: `step ${cls}` }, p ? el('div', { className: 'nm', textContent: p.name }) : null, p ? el('div', { className: 'pts', textContent: `${p.score.toLocaleString()} pts` }) : null, el('div', { className: 'block', textContent: n }));
+  main.append(el('h1', { style: 'text-align:center;font-size:clamp(28px,4vw,56px);margin-top:10px', textContent: first ? `${first.name} knows ${view.honoree} best! 🏆` : 'Game over!' }),
+    el('div', { className: 'podium' }, step(second, 'p2', '2'), step(first, 'p1', '1'), step(third, 'p3', '3')),
+    el('p', { className: 'made-with' }, 'Made with ', el('b', { textContent: 'QuizzlyPop' }), ` in 3 minutes · Throwing the next party? Make your own at ${joinInfo?.host || 'quizzlypop'}`));
+  bar.append(button('Play again', () => confirm('Reset scores and play again?') && act('restart'), 'btn secondary'), el('a', { className: 'btn', href: '/go?src=host_end&code=' + view.code, textContent: 'Make another game' }));
+}
+
+function renderPaywall() {
+  const root = $('#modal-root');
+  root.replaceChildren();
+  if (thanksOpen) {
+    root.append(el('div', { className: 'modal-back' }, el('div', { className: 'modal' },
+      el('div', { style: 'font-size:56px', textContent: '🎁' }),
+      el('h2', { textContent: "It's on us tonight!" }),
+      el('p', { className: 'muted', textContent: "Payments are launching soon, so this party is unlocked for free. Thanks for being an early host. We'll remember you 💜" }),
+      button('Keep the party going', () => { thanksOpen = false; root.replaceChildren(); }, 'btn'))));
+    return;
+  }
+  const pw = view.paywall;
+  if (!pw?.open || view.state !== 'lobby') return;
+  const unlock = button('Unlock Party Pass — $15', () => { thanksOpen = true; act('paywall_click'); }, 'btn big');
+  unlock.style.width = '100%';
+  const later = button('Not now', () => act('paywall_dismiss'), 'btn ghost');
+  root.append(el('div', { className: 'modal-back' }, el('div', { className: 'modal' },
+    el('div', { style: 'font-size:46px', textContent: '🎉' }),
+    el('h2', { textContent: 'This party is popping!' }),
+    el('p', { className: 'muted', textContent: `${view.playerCount} guests joined. The free game covers ${view.freeLimit} players.` }),
+    el('div', { className: 'price', textContent: '$15' }),
+    el('div', { className: 'muted', textContent: 'one-time · no subscription' }),
+    el('ul', {}, el('li', { textContent: `Up to ${view.maxPlayers} players` }), el('li', { textContent: 'Unlimited photo rounds' }), el('li', { textContent: 'Replay the game all night' })),
+    unlock, el('div', { style: 'margin-top:8px' }, later))));
+}
+
+function confetti() {
+  const box = $('#confetti');
+  const colors = ['#ff5a5f', '#00a99d', '#ffb703', '#7b5cff', '#ff4f8b', '#fff'];
+  for (let i = 0; i < 140; i++) {
+    const c = el('i');
+    c.style.left = Math.random() * 100 + 'vw';
+    c.style.background = colors[i % colors.length];
+    c.style.animationDuration = 2.5 + Math.random() * 2.5 + 's';
+    c.style.animationDelay = Math.random() * 1.2 + 's';
+    box.append(c);
+  }
+  setTimeout(() => box.replaceChildren(), 6500);
+}
+</script>
+</body>
+</html>
